@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Phone Distance Tracker</title>
+<style>
+  :root {
+    --bg: #f3f5f7; --card: #ffffff; --fg: #14202b; --muted: #5d6b78;
+    --line: #d8dee4; --accent: #0a7d6c; --accent-fg: #ffffff;
+    --warn: #b4540a; --bad: #b3261e; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f161c; --card: #17212a; --fg: #e8eef3; --muted: #92a1ae;
+      --line: #2a3945; --accent: #3ec9b0; --accent-fg: #06231e;
+      --warn: #f0a35e; --bad: #ff8a80; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 20px max(16px, env(safe-area-inset-left, 0px)) 32px max(16px, env(safe-area-inset-right, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    max-width: 520px; margin: 0 auto;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+  .big { font-variant-numeric: tabular-nums; font-size: 3.6rem; font-weight: 700; line-height: 1; letter-spacing: -.02em; }
+  .unit { font-size: 1.2rem; color: var(--muted); font-weight: 500; margin-left: 4px; }
+  .label { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; color: var(--muted); margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid > div { min-width: 0; }
+  .val { font-variant-numeric: tabular-nums; font-size: 1.35rem; font-weight: 600; }
+  .row { display: flex; gap: 10px; }
+  button {
+    flex: 1; font: inherit; font-weight: 600; padding: 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  #status { font-size: .9rem; color: var(--muted); min-height: 1.4em; }
+  #status.err { color: var(--bad); }
+  #fall { display: none; border-color: var(--warn); }
+  #fall.show { display: block; }
+  #fall .val { color: var(--warn); }
+  ul { margin: 6px 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .88rem; }
+  li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <h1>Phone Distance Tracker</h1>
+  <p class="sub">Press Start, move the phone, press Stop. Best for quick moves of 0.3 to 2 m.</p>
+
+  <div class="card">
+    <div class="label">Distance from start</div>
+    <div><span class="big" id="dist">0</span><span class="unit">cm</span></div>
+    <div id="status">Ready.</div>
+  </div>
+
+  <div class="row" style="margin-bottom:14px">
+    <button class="primary" id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div><div class="label">Path length</div><div class="val"><span id="path">0</span> cm</div></div>
+      <div><div class="label">Peak acceleration</div><div class="val"><span id="peak">0.0</span> m/s²</div></div>
+      <div><div class="label">Time</div><div class="val"><span id="time">0.0</span> s</div></div>
+      <div><div class="label">Height (x / y / z)</div><div class="val" style="font-size:1rem"><span id="xyz">0 / 0 / 0</span></div></div>
+    </div>
+  </div>
+
+  <div class="card" id="fall">
+    <div class="label">Free fall detected</div>
+    <div class="val"><span id="fallH">0</span> cm drop <span style="font-size:.9rem;color:var(--muted)">(<span id="fallT">0</span> s in the air)</span></div>
+    <div class="sub" style="margin:6px 0 0">Estimated from how long the phone was weightless: height = ½ × 9.81 × time². Good to about ±30%.</div>
+  </div>
+
+  <div class="card">
+    <div class="label">How to get a decent reading</div>
+    <ul>
+      <li>Hold still for a second after pressing Start. The app measures sensor bias then.</li>
+      <li>Move in a smooth, quick motion, then stop and hold still before pressing Stop.</li>
+      <li>Keep the phone from rotating much while moving.</li>
+      <li>Readings drift over time. Treat anything over a few seconds as a rough guess.</li>
+      <li>To test your fall, press Start and drop the phone onto a pillow. The free fall card gives a height.</li>
+    </ul>
+  </div>
+
+<script>
+(function () {
+  var G = 9.81;
+  var $ = function (id) { return document.getElementById(id); };
+  var state = "idle"; // idle | calibrating | tracking
+  var bias = [0, 0, 0], biasN = 0, calibEnd = 0;
+  var pos = [0, 0, 0], vel = [0, 0, 0], pathLen = 0, peak = 0;
+  var lastT = 0, startT = 0, quietMs = 0;
+  var orient = null;
+  var fallStart = 0, fallBest = 0;
+  var listening = false;
+
+  function setStatus(msg, err) { var s = $("status"); s.textContent = msg; s.className = err ? "err" : ""; }
+
+  function rotation(o) {
+    var d = Math.PI / 180, a = o.alpha * d, b = o.beta * d, g = o.gamma * d;
+    var cA = Math.cos(a), sA = Math.sin(a), cB = Math.cos(b), sB = Math.sin(b), cG = Math.cos(g), sG = Math.sin(g);
+    return [
+      [cA * cG - sA * sB * sG, -sA * cB, cA * sG + sA * sB * cG],
+      [sA * cG + cA * sB * sG, cA * cB, sA * sG - cA * sB * cG],
+      [-cB * sG, sB, cB * cG]
+    ];
+  }
+  function toWorld(v) {
+    if (!orient || orient.alpha == null || orient.beta == null || orient.gamma == null) return v;
+    var R = rotation(orient);
+    return [
+      R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2],
+      R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2],
+      R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2]
+    ];
+  }
+
+  function onOrient(e) { orient = { alpha: e.alpha, beta: e.beta, gamma: e.gamma }; }
+
+  function onMotion(e) {
+    var now = performance.now();
+    var a = e.acceleration;
+    var ag = e.accelerationIncludingGravity;
+
+    // Free fall: total acceleration including gravity drops near zero.
+    if (ag && ag.x != null) {
+      var mag = Math.sqrt(ag.x * ag.x + ag.y * ag.y + ag.z * ag.z);
+      if (state !== "idle" && mag < 2.5) {
+        if (!fallStart) fallStart = now;
+      } else if (fallStart) {
+        var dur = (now - fallStart) / 1000;
+        if (dur > 0.12 && dur > fallBest) {
+          fallBest = dur;
+          $("fall").className = "card show";
+          $("fallT").textContent = dur.toFixed(2);
+          $("fallH").textContent = Math.round(0.5 * G * dur * dur * 100);
+        }
+        fallStart = 0;
+      }
+    }
+
+    var lin;
+    if (a && a.x != null) {
+      lin = [a.x, a.y, a.z];
+    } else if (ag && ag.x != null) {
+      lin = [ag.x, ag.y, ag.z]; // gravity still included; bias calibration removes most of it
+    } else return;
+
+    var w = toWorld(lin);
+
+    if (state === "calibrating") {
+      bias[0] += w[0]; bias[1] += w[1]; bias[2] += w[2]; biasN++;
+      if (now >= calibEnd && biasN > 5) {
+        bias = [bias[0] / biasN, bias[1] / biasN, bias[2] / biasN];
+        state = "tracking"; lastT = now; startT = now;
+        setStatus("Tracking. Move the phone.");
+      }
+      return;
+    }
+    if (state !== "tracking") return;
+
+    var dt = (now - lastT) / 1000;
+    lastT = now;
+    if (dt <= 0 || dt > 0.2) return;
+
+    var acc = [w[0] - bias[0], w[1] - bias[1], w[2] - bias[2]];
+    var m = Math.sqrt(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
+    if (m > peak) peak = m;
+
+    // Dead zone and stillness detection to stop drift.
+    if (m < 0.15) {
+      acc = [0, 0, 0];
+      quietMs += dt * 1000;
+    } else {
+      quietMs = 0;
+    }
+    if (quietMs > 250) { vel = [0, 0, 0]; }
+
+    var step = 0;
+    for (var i = 0; i < 3; i++) {
+      var v0 = vel[i];
+      vel[i] += acc[i] * dt;
+      var dp = (v0 + vel[i]) / 2 * dt;
+      pos[i] += dp;
+      step += dp * dp;
+    }
+    pathLen += Math.sqrt(step);
+    render();
+  }
+
+  function render() {
+    var d = Math.sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]) * 100;
+    $("dist").textContent = d.toFixed(0);
+    $("path").textContent = (pathLen * 100).toFixed(0);
+    $("peak").textContent = peak.toFixed(1);
+    $("time").textContent = state === "tracking" ? ((performance.now() - startT) / 1000).toFixed(1) : $("time").textContent;
+    $("xyz").textContent = (pos[0] * 100).toFixed(0) + " / " + (pos[1] * 100).toFixed(0) + " / " + (pos[2] * 100).toFixed(0);
+  }
+
+  function resetAll() {
+    pos = [0, 0, 0]; vel = [0, 0, 0]; pathLen = 0; peak = 0; quietMs = 0;
+    bias = [0, 0, 0]; biasN = 0; fallStart = 0; fallBest = 0;
+    $("fall").className = "card"; $("time").textContent = "0.0";
+    $("dist").textContent = "0"; $("path").textContent = "0"; $("peak").textContent = "0.0"; $("xyz").textContent = "0 / 0 / 0";
+  }
+
+  function ensureListeners() {
+    if (listening) return;
+    window.addEventListener("devicemotion", onMotion);
+    window.addEventListener("deviceorientation", onOrient);
+    listening = true;
+  }
+
+  async function askPermission() {
+    try {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+        var r = await DeviceMotionEvent.requestPermission();
+        if (r !== "granted") return false;
+      }
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        try { await DeviceOrientationEvent.requestPermission(); } catch (e) {}
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  $("startBtn").addEventListener("click", async function () {
+    if (!window.DeviceMotionEvent) { setStatus("This browser has no motion sensor access.", true); return; }
+    if (!window.isSecureContext) { setStatus("Motion sensors need HTTPS. Open this page from an https:// address.", true); return; }
+    var ok = await askPermission();
+    if (!ok) { setStatus("Motion permission was denied. Allow it in browser settings and try again.", true); return; }
+    resetAll();
+    ensureListeners();
+    state = "calibrating"; calibEnd = performance.now() + 700;
+    $("startBtn").disabled = true; $("stopBtn").disabled = false;
+    setStatus("Hold still for a moment...");
+    var guard = setTimeout(function () {
+      if (state === "calibrating" && biasN === 0) {
+        state = "idle"; $("startBtn").disabled = false; $("stopBtn").disabled = true;
+        setStatus("No sensor data arrived. Check that motion sensors are enabled for this site.", true);
+      }
+    }, 2500);
+    window.__guard = guard;
+  });
+
+  $("stopBtn").addEventListener("click", function () {
+    var wasTracking = state === "tracking";
+    state = "idle";
+    $("startBtn").disabled = false; $("stopBtn").disabled = true;
+    render();
+    setStatus(wasTracking ? "Stopped. Distance is a rough estimate." : "Stopped.");
+  });
+
+  $("resetBtn").addEventListener("click", function () {
+    state = "idle"; resetAll();
+    $("startBtn").disabled = false; $("stopBtn").disabled = true;
+    setStatus("Ready.");
+  });
+
+  setInterval(function () { if (state === "tracking") render(); }, 200);
+})();
+</script>
+</body>
+</html>
